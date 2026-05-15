@@ -15,10 +15,9 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            position: relative;
         }
         
-        canvas { 
+        img#displayImage { 
             max-width: 100%;
             max-height: 100%;
             object-fit: contain;       
@@ -40,7 +39,6 @@
         .correct { background-color: green; color: white; padding: 10px; margin-top: 20px; }
         .wrong { background-color: red; color: white; padding: 10px; margin-top: 20px; }
         
-        /* Action Button Styling */
         .btn-update { 
             margin-top: 20px; width: 100%; padding: 12px; 
             font-size: 16px; background-color: #007BFF; color: white; 
@@ -62,13 +60,13 @@
     <p>Look at the compressed image and guess what fruit it is!</p>
     
     <div class="canvas-container">
-        <canvas id="imageCanvas"></canvas>
+        <!-- Render from static string elements cleanly -->
+        <img id="displayImage" src="data:image/png;base64,{{ initial_image_b64 }}" alt="SVD Visual Matrix">
     </div>
 
     <div class="control-group">
         <label for="n_input">Adjust compression level (singular values):</label>
-        <!-- Default value altered directly to 1 here -->
-        <input type="number" id="n_input" value="1" min="1">
+        <input type="number" id="n_input" value="1" min="1" max="200">
         
         <label for="guess_input" style="margin-top: 20px;">Choose the correct fruit:</label>
         <div class="autocomplete-container">
@@ -76,7 +74,6 @@
             <div id="autocomplete_list" class="autocomplete-list"></div>
         </div>
 
-        <!-- Added Grayscale modification switch toggle element -->
         <button id="gray_btn" class="btn-grayscale">Toggle Grayscale: OFF</button>
         <button id="update_btn" class="btn-update">Update Image (Next Round)</button>
     </div>
@@ -84,16 +81,14 @@
     <div id="result"></div>
 
     <script>
-        let svdData = {{ svd_matrices_json | safe }};
-        let imgHeight = parseInt("{{ img_height }}") || 400;
-        let imgWidth = parseInt("{{ img_width }}") || 400;
-        let correct = "{{ correct }}";
-        let isGrayscale = false; // State variable tracking active filter parameters
+        // Track the current round state variables in memory
+        let currentImgPath = "{{ current_image_path }}";
+        let correctAnswer = "{{ correct }}";
+        let isGrayscale = false;
         
         const allNames = {{ names_list_json | safe }}.sort((a, b) => a.localeCompare(b));
 
-        const canvas = document.getElementById('imageCanvas');
-        const ctx = canvas.getContext('2d');
+        const displayImage = document.getElementById('displayImage');
         const nInput = document.getElementById('n_input');
         const guessInput = document.getElementById('guess_input');
         const autocompleteList = document.getElementById('autocomplete_list');
@@ -101,70 +96,22 @@
         const updateBtn = document.getElementById('update_btn');
         const grayBtn = document.getElementById('gray_btn');
 
-        function setupCanvasDimensions() {
-            canvas.width = imgWidth;
-            canvas.height = imgHeight;
-            nInput.max = Math.min(imgHeight, imgWidth);
-        }
-
-        function reconstructChannel(channelSVD, n) {
-            const U = channelSVD.U; const s = channelSVD.s; const V = channelSVD.V;
-            const out = new Float32Array(imgHeight * imgWidth);
-            
-            for (let r = 0; r < imgHeight; r++) {
-                for (let c = 0; c < imgWidth; c++) {
-                    let val = 0;
-                    for (let i = 0; i < n; i++) { 
-                        val += U[r][i] * s[i] * V[i][c]; 
-                    }
-                    out[r * imgWidth + c] = val;
-                }
-            }
-            return out;
-        }
-
-        function drawCompressedImage() {
-            if (!svdData || svdData.length < 3) return;
-            
-            let n = parseInt(nInput.value) || 1;
-            if (n < 1) n = 1;
-            if (n > nInput.max) n = nInput.max;
-
-            const rData = reconstructChannel(svdData, n);
-            const gData = reconstructChannel(svdData, n);
-            const bData = reconstructChannel(svdData, n);
-
-            const imgData = ctx.createImageData(imgWidth, imgHeight);
-            const data = imgData.data;
-
-            let maxR = 0, minR = Infinity, maxG = 0, minG = Infinity, maxB = 0, minB = Infinity;
-            for (let i = 0; i < rData.length; i++) {
-                if (rData[i] > maxR) maxR = rData[i]; if (rData[i] < minR) minR = rData[i];
-                if (gData[i] > maxG) maxG = gData[i]; if (gData[i] < minG) minG = gData[i];
-                if (bData[i] > maxB) maxB = bData[i]; if (bData[i] < minB) minB = bData[i];
-            }
-
-            for (let i = 0; i < rData.length; i++) {
-                const idx = i * 4;
+        async function refreshImageRendering() {
+            try {
+                const nVal = parseInt(nInput.value) || 1;
+                // Query serverless endpoint using lightweight query variables
+                const url = `/api/render-image?path=${encodeURIComponent(currentImgPath)}&n=${nVal}&grayscale=${isGrayscale}`;
                 
-                let r = Math.min(255, Math.max(0, ((rData[i] - minR) / (maxR - minR || 1)) * 255));
-                let g = Math.min(255, Math.max(0, ((gData[i] - minG) / (maxG - minG || 1)) * 255));
-                let b = Math.min(255, Math.max(0, ((bData[i] - minB) / (maxB - minB || 1)) * 255));
-
-                // Apply weighted luminance formula if grayscale is enabled
-                if (isGrayscale) {
-                    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                    r = gray;
-                    g = gray;
-                    b = gray;
-                }
-
-                data[idx]     = r;
-                data[idx + 1] = g;
-                data[idx + 2] = b;
-                data[idx + 3] = 255;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.error) throw new Error(data.error);
+                
+                // Swap viewport instantly via lightweight base64 string assignment
+                displayImage.src = "data:image/png;base64," + data.img_b64;
+            } catch (err) {
+                console.error("Render loop failed:", err);
             }
-            ctx.putImageData(imgData, 0, 0);
         }
 
         function evaluateGuess(selected) {
@@ -173,49 +120,47 @@
             guessInput.disabled = true;
             nInput.disabled = true;
 
-            if (selected.toLowerCase() === correct.toLowerCase()) {
-                resultDiv.innerHTML = '<p class="correct">Correct! It was ' + correct + '.</p>';
+            if (selected.toLowerCase() === correctAnswer.toLowerCase()) {
+                resultDiv.innerHTML = '<p class="correct">Correct! It was ' + correctAnswer + '.</p>';
             } else {
-                resultDiv.innerHTML = '<p class="wrong">Wrong! It was ' + correct + '.</p>';
+                resultDiv.innerHTML = '<p class="wrong">Wrong! It was ' + correctAnswer + '.</p>';
             }
         }
 
-        async function loadNextImage() {
+        async function startNextRound() {
             try {
                 updateBtn.disabled = true;
-                updateBtn.innerText = "Loading data stream...";
+                updateBtn.innerText = "Generating next round asset...";
                 
-                const response = await fetch('/api/new-game');
-                if (!response.ok) throw new Error("Server network fault.");
+                const response = await fetch('/api/new-round');
                 const data = await response.json();
                 
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-
-                svdData = data.svd_matrices;
-                imgHeight = data.img_height;
-                imgWidth = data.img_width;
-                correct = data.correct;
-
+                if (data.error) throw new Error(data.error);
+                
+                // Re-bind states
+                currentImgPath = data.img_path;
+                correctAnswer = data.correct;
+                
+                // Reset form elements
                 guessInput.disabled = false;
                 nInput.disabled = false;
                 guessInput.value = "";
                 resultDiv.innerHTML = "";
-                nInput.value = "1"; // Resets default field values to 1 on update cycles
+                nInput.value = "1";
+                isGrayscale = false;
                 
-                setupCanvasDimensions();
-                drawCompressedImage();
+                grayBtn.innerText = "Toggle Grayscale: OFF";
+                grayBtn.classList.remove('active');
+                
+                displayImage.src = "data:image/png;base64," + data.img_b64;
             } catch (error) {
-                console.error("Network Fetch error trace:", error);
-                alert("Failed to grab a new image.\n\nServer Trace details:\n" + error.message);
+                alert("Failed to transition rounds: " + error.message);
             } finally {
                 updateBtn.disabled = false;
                 updateBtn.innerText = "Update Image (Next Round)";
             }
         }
 
-        // Grayscale switch action handler logic
         grayBtn.addEventListener('click', function() {
             isGrayscale = !isGrayscale;
             if (isGrayscale) {
@@ -225,7 +170,7 @@
                 grayBtn.innerText = "Toggle Grayscale: OFF";
                 grayBtn.classList.remove('active');
             }
-            drawCompressedImage(); // Re-render image matrix with new values instantly
+            refreshImageRendering();
         });
 
         guessInput.addEventListener('input', function() {
@@ -247,11 +192,8 @@
             if (e.target !== guessInput) autocompleteList.innerHTML = "";
         });
 
-        nInput.addEventListener('input', drawCompressedImage);
-        updateBtn.addEventListener('click', loadNextImage);
-        
-        setupCanvasDimensions();
-        drawCompressedImage();
+        nInput.addEventListener('input', refreshImageRendering);
+        updateBtn.addEventListener('click', startNextRound);
     </script>
 </body>
 </html>
